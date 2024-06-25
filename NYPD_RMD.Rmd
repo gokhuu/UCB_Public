@@ -1,0 +1,153 @@
+---
+title: "NYPD_Shooting_Data_History"
+author: "Brandon Khuu"
+date: "2024-03-02"
+output: html_document
+---
+
+#Import Libraries
+
+Import the libraries needed to run the file
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(caret)
+library(randomForest)
+```
+
+
+#Import the file
+
+Import the library in R studio. Add a header and do not convert the strings into a factor data type
+
+```{r }
+data1 <- read.csv("C:\\Users\\bkhuu\\ucb\\NYPD_Shooting_Incident_Data__Historic_.csv", header=TRUE, stringsAsFactors = FALSE)
+
+```
+
+## Data Summary
+
+Initial data summary to describe the data from a surface level view.
+
+```{r }
+str(data1)
+summary(data1)
+```
+
+## Check for missing values
+
+See which (if any) columns have missing values and if there are any things we need to impute for analysis and models going forward.
+
+Depending on the columns and values we can decide on the imputation method.
+
+```{r }
+
+colSums(is.na(data1))
+```
+
+## Convert dates to Date format
+
+Convert the date format into something a little easier to work with
+```{r }
+
+data1$OCCUR_DATE <- as.Date(data1$OCCUR_DATE, "%m/%d/%Y")
+```
+
+##Exploratory analysis
+
+Do some basic analysis and visualization via graphs
+
+```{r}
+data1 %>%
+  mutate(Year = format(OCCUR_DATE, "%Y")) %>%
+  group_by(Year) %>%
+  summarise(Incidents = n()) %>%
+  ggplot(aes(x = Year, y = Incidents)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Number of Shooting Incidents per Year",
+       x = "Year",
+       y = "Number of Incidents") +
+  theme_minimal()
+
+```
+The graph above shows the number of shootings per years
+
+```{r}
+data1 %>%
+  group_by(BORO) %>%
+  summarise(Incidents = n()) %>%
+  ggplot(aes(x = BORO, y = Incidents, fill = BORO)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Distribution of Shooting Incidents by Borough",
+       x = "Borough",
+       y = "Number of Incidents") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+This graph shows the number of shootings per boro.
+
+#Preparing data for the model
+
+##set historical dates
+creating a filter for older dates to be used in the future
+```{r}
+
+# Filter data to include only incidents before the specified date
+data_before_date <- filter(data1, OCCUR_DATE < as.Date("2024-03-05"))
+
+# Create a new column for the day of the year using as.numeric and format instead of yday
+data_before_date$DayOfYear <- as.numeric(format(data_before_date$OCCUR_DATE, "%j"))
+
+```
+
+Splitting data into training sets and testing sets.
+Setting seed to "123" which will allow for reproducibility.
+
+```{r}
+# Splitting the data into training and testing sets
+set.seed(123)
+training_indices <- createDataPartition(data_before_date$DayOfYear, p=0.8, list=FALSE)
+training_data <- data_before_date[training_indices,]
+testing_data <- data_before_date[-training_indices,]
+```
+
+Train the model
+```{r}
+model <- randomForest(DayOfYear ~ ., data=training_data[,-which(names(training_data) %in% c("OCCUR_DATE"))], ntree=100, na.action = na.omit)
+```
+
+Test the model
+```{r}
+# Calculating the Mean Squared Error (MSE) for the model's predictions, ensuring no NA values are included in the calculation
+actual_days <- testing_data$DayOfYear
+predicted_days <- predict(model, newdata=testing_data[,-which(names(testing_data) %in% c("OCCUR_DATE", "DayOfYear"))])
+
+# Filtering out any NA values from actual_days and predicted_days before calculating MSE
+valid_indices <- !is.na(actual_days) & !is.na(predicted_days)
+mse <- mean((actual_days[valid_indices] - predicted_days[valid_indices])^2, na.rm = TRUE)
+print(paste("Mean Squared Error (MSE):", mse))
+```
+Accuracy of the model was scored using Mean Squared Error.
+MSE: 5761.17499135467
+
+```{r}
+# Ensuring the prediction is a numeric value and handling potential NA values
+current_year_incident_prediction <- na.omit(predict(model, newdata=testing_data[,-which(names(testing_data) %in% c("OCCUR_DATE", "DayOfYear"))]))
+if(length(current_year_incident_prediction) > 0) {
+  # Extracting the current year from the system's date
+  current_year <- format(Sys.Date(), "%Y")
+  # Converting the mean of predictions to a future date
+  predicted_future_date <- as.Date(paste(current_year, "-01-01", sep="")) + mean(current_year_incident_prediction) - 1
+  print(paste("Predicted future date of the next incident:", as.character(predicted_future_date)))
+} else {
+  print("Unable to predict future date due to insufficient data or model prediction error.")
+}
+```
+Predicted future date of the next incident using the testing data: 2024-07-06
