@@ -1,0 +1,371 @@
+---
+title: "Covid19"
+author: "Brandon Khuu"
+date: "2024-06-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(purrr)
+library(caret)
+library(randomForest)
+```
+
+Import the data
+```{r}
+# github link
+url_in = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+#  the csv files
+file_names = c("time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_global.csv", "time_series_covid19_deaths_US.csv", "time_series_covid19_confirmed_US.csv")
+
+# Import data
+urls = str_c(url_in, file_names)
+urls
+```
+
+Print Overview of each table
+
+```{r}
+us_cases = read_csv(urls[3])
+us_deaths = read_csv(urls[4])
+```
+Check the First 5 of each table
+```{r}
+head(us_cases)
+head(us_deaths)
+```
+
+Preprocess and clean the tables for the columns that we will be working with
+
+```{r}
+# Pivot wide-format data for dates and sum totals for each state
+
+cases = us_cases %>% 
+  pivot_longer(cols = 13:ncol(us_cases), names_to = "date") %>%
+  group_by(`Province_State`, date) %>%
+  summarise("cum_cases" = sum(value, na.rm = TRUE), .groups = 'drop')
+
+deaths = us_deaths %>% 
+  pivot_longer(cols = 13:ncol(us_deaths), names_to = "date") %>%
+  group_by(`Province_State`, date) %>%
+  summarise("cum_deaths" = sum(value, na.rm = TRUE), .groups = 'drop')
+```
+
+Adjust the date from character string to date object
+```{r}
+# Convert dates to datetime object
+cases$date = lubridate::mdy(cases$date)
+deaths$date = lubridate::mdy(deaths$date)
+
+# Rename columns from Province_State -> State & Admin2 -> County
+cases = cases %>% 
+  rename_at('Province_State', ~'State')
+deaths = deaths %>% 
+  rename_at('Province_State', ~'State')
+
+# check global deaths and cases data 
+head(cases)
+head(deaths)
+```
+Look for the states with the highest number of caeses and deaths to do analysis
+```{r}
+
+top_cases <- cases %>%
+  group_by(State) %>%
+  summarise(cum_cases = max(cum_cases, na.rm = TRUE))
+
+top_deaths <- deaths %>%
+  group_by(State) %>%
+  summarise(cum_deaths = max(cum_deaths, na.rm = TRUE))
+
+top5cases <- top_cases %>%
+  arrange(desc(cum_cases)) %>%
+  slice_head(n=5)
+
+top5deaths <- top_deaths %>%
+  arrange(desc(cum_deaths)) %>%
+  slice_head(n=5)
+
+print(top5cases)
+print(top5deaths)
+```
+
+Create us_all and the split by target states
+```{r merge global cases and deaths}
+# merge global data sets and filter to get data just for Switzerland and for germany
+us_all = merge(x=deaths, y=cases, all.x=TRUE)
+CA <- us_all[us_all$State == "California", ]
+TX <- us_all[us_all$State == "Texas", ]
+FL <- us_all[us_all$State == "Florida", ]
+NY <- us_all[us_all$State == "New York", ]
+IL <- us_all[us_all$State == "Illinois", ]
+PA <- us_all[us_all$State == "Pennsylvania", ]
+
+# View first several lines of each data set
+
+head(CA)
+head(TX)
+head(FL)
+head(NY)
+head(IL)
+head(PA)
+```
+
+Adjust the values in the columns based on state popululation. (per capita)
+[State populations from: [https://worldpopulationreview.com/states]
+```{r}
+
+# Adding a per capita column to both data sets and viewing their summaries
+CA_cap <- CA %>%
+  mutate(
+    CA_cases_per_capita = cum_cases / 38889770,
+    CA_deaths_per_capita = cum_deaths / 38889770,
+  )
+
+
+TX_cap <- TX %>%
+  mutate(
+    TX_cases_per_capita = cum_cases / 30976754,
+    TX_deaths_per_capita = cum_deaths / 30976754
+  )
+
+FL_cap <- FL %>%
+  mutate(
+    FL_cases_per_capita = cum_cases / 22975931,
+    FL_deaths_per_capita = cum_deaths / 22975931
+  )
+
+
+NY_cap <- NY %>%
+  mutate(
+    NY_cases_per_capita = cum_cases / 19469232,
+    NY_deaths_per_capita = cum_deaths / 19469232
+  )
+
+IL_cap <- IL %>%
+  mutate(
+    IL_cases_per_capita = cum_cases / 12516863,
+    IL_deaths_per_capita = cum_deaths / 12516863
+  )
+
+PA_cap <- PA %>%
+  mutate(
+    PA_cases_per_capita = cum_cases / 12516863,
+    PA_deaths_per_capita = cum_deaths / 12516863
+  )
+```
+
+Print smmary of each state to get an overview of each dataframe
+```{r}
+summary(CA_cap)
+summary(TX_cap)
+summary(FL_cap)
+summary(NY_cap)
+summary(IL_cap)
+summary(PA_cap)
+```
+
+Merge the individual state dataframes into 1 single dataframe
+```{r}
+merged_CA_TX <- merge(CA_cap,TX_cap, by = "date", all = TRUE, suffixes = c(".CA", ".TX"))
+merged_CA_TX_FL <- merge(merged_CA_TX,FL_cap, by = "date", all = TRUE, suffixes = c("", "FL"))
+merged_CA_TX_FL_NY <- merge(merged_CA_TX_FL,NY_cap, by = "date", all = TRUE, suffixes = c("", "NY"))
+merged_CA_TX_FL_NY_PA <- merge(merged_CA_TX_FL_NY,PA_cap, by = "date", all = TRUE, suffixes = c("", "PA"))
+all_merge <- merge(merged_CA_TX_FL_NY_PA,IL_cap, by = "date", all = TRUE, suffixes = c("", "IL"))
+```
+
+Plot the cases per capita and deaths per capita
+```{r}
+# Create line plots for cases per capita
+ggplot(all_merge, aes(x = date)) +
+  geom_line(aes(y = CA_cases_per_capita, color = "California", linetype = "California")) +
+  geom_line(aes(y = TX_cases_per_capita, color = "Texas", linetype = "Texas")) +
+  geom_line(aes(y = FL_cases_per_capita, color = "Florida", linetype = "Florida")) +
+  geom_line(aes(y = NY_cases_per_capita, color = "New York", linetype = "New York")) +
+  geom_line(aes(y = IL_cases_per_capita, color = "Illinois", linetype = "Illinois")) +
+  geom_line(aes(y = PA_cases_per_capita, color = "Pennsylvania", linetype = "Pennsylvania")) +
+  labs(title = "Cumulative Cases Per Capita Comparison",
+       x = "Date",
+       y = "Cumulative Cases Per Capita",
+       color = "State",
+       linetype = "State") +
+  scale_color_manual(values = c("California" = "blue", 
+                                "Texas" = "red",
+                                "Florida" = "green", 
+                                "New York" = "purple", 
+                                "Illinois" = "pink",
+                                "Pennsylvania" = "yellow")) +
+  scale_linetype_manual(values = c("California" = "solid", 
+                                   "Texas" = "solid", 
+                                   "Florida" = "solid", 
+                                   "New York" = "solid", 
+                                   "Illinois" = "solid",
+                                   "Pennsylvania" = "solid")) +
+  theme_minimal()
+
+# Create line plots for deaths per capita
+ggplot(all_merge, aes(x = date)) +
+  geom_line(aes(y = CA_deaths_per_capita, color = "California", linetype = "California")) +
+  geom_line(aes(y = TX_deaths_per_capita, color = "Texas", linetype = "Texas")) +
+  geom_line(aes(y = FL_deaths_per_capita, color = "Florida", linetype = "Florida")) +
+  geom_line(aes(y = NY_deaths_per_capita, color = "New York", linetype = "New York")) +
+  geom_line(aes(y = IL_deaths_per_capita, color = "Illinois", linetype = "Illinois")) +
+  geom_line(aes(y = PA_deaths_per_capita, color = "Pennsylvania", linetype = "Pennsylvania")) +
+  labs(title = "Cumulative Deaths Per Capita Comparison",
+       x = "Date",
+       y = "Cumulative Deaths Per Capita",
+       color = "State",
+       linetype = "State") +
+  scale_color_manual(values = c("California" = "blue", 
+                                "Texas" = "red",
+                                "Florida" = "green", 
+                                "New York" = "purple", 
+                                "Illinois" = "pink",
+                                "Pennsylvania" = "yellow")) +
+  scale_linetype_manual(values = c("California" = "solid", 
+                                   "Texas" = "solid", 
+                                   "Florida" = "solid", 
+                                   "New York" = "solid", 
+                                   "Illinois" = "solid",
+                                   "Pennsylvania" = "solid")) +
+  theme_minimal()
+```
+Create columnn deaths per case
+```{r}
+CA$deaths_per_case <- ifelse(CA$cum_cases > 0,CA$cum_deaths / CA$cum_cases,0)
+TX$deaths_per_case <- ifelse(TX$cum_cases > 0,TX$cum_deaths / TX$cum_cases,0)
+FL$deaths_per_case <- ifelse(FL$cum_cases > 0,FL$cum_deaths / FL$cum_cases,0)
+NY$deaths_per_case <- ifelse(NY$cum_cases > 0,NY$cum_deaths / NY$cum_cases,0)
+IL$deaths_per_case <- ifelse(IL$cum_cases > 0,IL$cum_deaths / IL$cum_cases,0)
+PA$deaths_per_case <- ifelse(PA$cum_cases > 0,PA$cum_deaths / PA$cum_cases,0)
+```
+Plot deaths per case to view deaths over time
+```{r}
+
+ggplot(CA, aes(x = date, y = deaths_per_case, color = "California")) +
+  geom_line() +
+  labs(title = "Deaths per Case Over Time",
+       x = "Date",
+       y = "Deaths per Case",
+       color = "California") +
+  theme_minimal()
+
+ggplot(TX, aes(x = date, y = deaths_per_case, color = "Texas")) +
+  geom_line() +
+  labs(title = "Deaths per Case Over Time",
+       x = "Date",
+       y = "Deaths per Case",
+       color = "Texas") +
+  theme_minimal()
+
+ggplot(FL, aes(x = date, y = deaths_per_case, color = "Florida")) +
+  geom_line() +
+  labs(title = "Deaths per Case Over Time",
+       x = "Date",
+       y = "Deaths per Case",
+       color = "California") +
+  theme_minimal()
+
+ggplot(NY, aes(x = date, y = deaths_per_case, color = "New York")) +
+  geom_line() +
+  labs(title = "Deaths per Case Over Time",
+       x = "Date",
+       y = "Deaths per Case",
+       color = "New York") +
+  theme_minimal()
+
+ggplot(IL, aes(x = date, y = deaths_per_case, color = "Illinois")) +
+  geom_line() +
+  labs(title = "Deaths per Case Over Time",
+       x = "Date",
+       y = "Deaths per Case",
+       color = "Illinois") +
+  theme_minimal()
+
+ggplot(PA, aes(x = date, y = deaths_per_case, color = "Pennsylvania")) +
+  geom_line() +
+  labs(title = "Deaths per Case Over Time",
+       x = "Date",
+       y = "Deaths per Case",
+       color = "Illinois") +
+  theme_minimal()
+
+```
+Merge each state dataframe to view on a single graph
+```{r}
+merged_states_count <- rbind(transform(CA, dataset = "CA"),
+                             transform(TX, dataset = "TX"),
+                             transform(FL, dataset = "FL"),
+                             transform(NY, dataset = "NY"),
+                             transform(IL, dataset = "IL"),
+                             transform(PA, dataset = "PA"))
+
+ggplot(merged_states_count, aes(x = date, y = deaths_per_case, color = State, linetype = dataset)) +
+  geom_line() +
+  labs(title = "Deaths per Case Over Time",
+       x = "Date",
+       y = "Deaths per Case",
+       color = "State",
+       linetype = "Dataset") +
+  theme_minimal()
+```
+
+State predictor model with random forest.
+Principal Compnent Analysis(PCA) was used as the target feature to aggregate all 6 deaths per capita to maintain the variability 
+```{r}
+
+X <- all_merge[, c('CA_cases_per_capita', 'TX_cases_per_capita', 
+                   'FL_cases_per_capita', 'NY_cases_per_capita', 
+                   'IL_cases_per_capita', 'PA_cases_per_capita')]
+
+pca <- prcomp(all_merge[, c('CA_deaths_per_capita', 'TX_deaths_per_capita', 
+                            'FL_deaths_per_capita', 'NY_deaths_per_capita', 
+                            'IL_deaths_per_capita','PA_deaths_per_capita')], scale = TRUE)
+
+all_merge$pca_deaths_per_capita <- pca$x[,1]
+y <- all_merge$pca_deaths_per_capita
+```
+
+
+Split data into train/test set using seed 123
+```{r}
+set.seed(123)
+trainIndex <- createDataPartition(y, p = .8, list = FALSE, times = 1)
+X_train <- X[trainIndex,]
+X_test <- X[-trainIndex,]
+y_train <- y[trainIndex]
+y_test <- y[-trainIndex]
+rf_model <- randomForest(X_train, y_train, ntree = 100)
+```
+
+Predictions form the model and scoring with Mean Squarred Error(MSE)
+```{r}
+y_pred <- predict(rf_model, X_test)
+mse <- mean((y_test - y_pred)^2)
+print(paste('Mean Squared Error:', mse))
+print(importance(rf_model))
+```
+
+Graph Node Purity to see which column had the most influnce on the model
+```{r}
+importance_df <- as.data.frame(importance(rf_model))
+importance_df$Feature <- rownames(importance_df)
+
+# Create a bar plot
+ggplot(importance_df, aes(x = reorder(Feature, IncNodePurity), y = IncNodePurity)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  xlab("Feature") +
+  ylab("Increase in Node Purity") +
+  ggtitle("Feature Importance based on IncNodePurity") +
+  theme_minimal()
+
+```
+
