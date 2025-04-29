@@ -1,4 +1,10 @@
-
+*.npy
+*.pth
+*.keras
+*.png
+*.wav
+*.tif
+*.tfrec
 Data_Vis_Final/Final_Presentation.zip
 Unsupervised_ML_Final/Data/genres_original/blues/blues.00000.wav
 Unsupervised_ML_Final/Data/genres_original/blues/blues.00001.wav
